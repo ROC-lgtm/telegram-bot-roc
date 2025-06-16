@@ -321,4 +321,5 @@ def handle_query(call):
         send_main_menu(chat_id)
 
 print("🤖 Бот запущено...")
+bot.polling(none_stop=True)
 bot.infinity_polling()
