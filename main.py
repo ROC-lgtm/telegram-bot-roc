@@ -1,8 +1,9 @@
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 import uuid
+import os
 
-BOT_TOKEN = '7412070083:AAEKAHHxHLcbGdtlXN8nWxCp3b85eVBVtAU'
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 bot = telebot.TeleBot(BOT_TOKEN)
 
 def send_main_menu(chat_id):
