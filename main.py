@@ -1,65 +1,62 @@
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
-from flask import Flask, request
 import os
 import logging
+import time
+import asyncio
+import requests
+from telebot.handler_backends import BaseMiddleware
+from telebot import types
 
 # Налаштування логування
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler("bot.log"),
+        logging.StreamHandler()
+    ]
+)
 logger = logging.getLogger(__name__)
-
-# Ініціалізація Flask
-app = Flask(__name__)
 
 # Налаштування Telegram бота
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # Наприклад, https://telegram-bot-roc.onrender.com/webhook
+KEEP_ALIVE_URL = os.getenv("RENDER_EXTERNAL_URL")  # Наприклад, https://your-service.onrender.com
 
 # Перевірка змінних оточення
 if not BOT_TOKEN:
     logger.error("BOT_TOKEN не встановлено. Перевірте змінні оточення.")
     raise ValueError("BOT_TOKEN не встановлено")
-if not WEBHOOK_URL:
-    logger.error("WEBHOOK_URL не встановлено. Перевірте змінні оточення.")
-    raise ValueError("WEBHOOK_URL не встановлено")
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
-# Видаляємо старий webhook
-try:
-    bot.remove_webhook()
-    logger.info("Старий webhook видалено")
-except Exception as e:
-    logger.error(f"Помилка видалення старого webhook: {e}")
+# Middleware для обмеження частоти запитів
+class RateLimitMiddleware(BaseMiddleware):
+    def __init__(self):
+        self.last_request = {}
 
-# Встановлюємо новий webhook
-try:
-    bot.set_webhook(url=WEBHOOK_URL)
-    logger.info(f"Webhook встановлено: {WEBHOOK_URL}")
-except Exception as e:
-    logger.error(f"Помилка встановлення webhook: {e}")
-    raise
+    def pre_process(self, message, data):
+        chat_id = message.chat.id if isinstance(message, types.Message) else message.from_user.id
+        current_time = time.time()
+        if chat_id in self.last_request:
+            if current_time - self.last_request[chat_id] < 0.5:  # Обмеження: 0.5 сек
+                return None  # Пропускаємо запит
+        self.last_request[chat_id] = current_time
+        return data
 
-# Головна сторінка
-@app.route('/')
-def home():
-    return "Telegram Bot is running!"
+    def post_process(self, message, data, exception):
+        pass
 
-# Webhook endpoint
-@app.route('/webhook', methods=['POST'])
-def webhook():
-    try:
-        if request.headers.get('content-type') == 'application/json':
-            json_string = request.get_data().decode('utf-8')
-            update = telebot.types.Update.de_json(json_string)
-            bot.process_new_updates([update])
-            return '', 200
-        else:
-            logger.warning("Невірний content-type у запиті")
-            return '', 403
-    except Exception as e:
-        logger.error(f"Помилка обробки webhook: {e}")
-        return '', 500
+bot.setup_middleware(RateLimitMiddleware())
+
+# Функція для "пінгування" сервера
+def keep_alive():
+    if KEEP_ALIVE_URL:
+        try:
+            response = requests.get(KEEP_ALIVE_URL)
+            logger.info(f"Keep-alive ping: {response.status_code}")
+        except Exception as e:
+            logger.error(f"Помилка keep-alive: {e}")
 
 # Функція головного меню
 def send_main_menu(chat_id):
@@ -136,11 +133,7 @@ def handle_query(call):
                 "✅ Відповіді на запитання в процесі супроводу\n\n"
                 "📌 *Додатково:* при використанні РРО та/або еквайрингу — +100 грн/міс"
             )
-            markup = InlineKeyboardMarkup(row_width=1)
-            markup.add(
-                InlineKeyboardButton("💼 Наші контакти", callback_data="contacts"),
-                InlineKeyboardButton("🔙 Повернутися до попереднього меню", callback_data="prices")
-            )
+            markup = tpl_back()
             bot.edit_message_text(text, chat_id, message_id, reply_markup=markup, parse_mode="Markdown")
 
         elif call.data == "fop2":
@@ -385,7 +378,25 @@ def handle_query(call):
         logger.error(f"Помилка обробки callback {call.data}: {e}")
         bot.answer_callback_query(call.id, "Виникла помилка. Спробуйте ще раз.")
 
-# Запуск сервера
-if __name__ == '__main__':
-    port = int(os.getenv("PORT", 10000))
-    app.run(host='0.0.0.0', port=port)
+# Асинхронна функція для polling із повторними спробами
+async def run_polling():
+    while True:
+        try:
+            logger.info("Запуск polling...")
+            await bot.polling(none_stop=True, interval=0, timeout=20)
+        except Exception as e:
+            logger.error(f"Помилка polling: {e}")
+            await asyncio.sleep(10)  # Чекаємо 10 секунд перед перезапуском
+            keep_alive()  # Пінгуємо сервер для підтримки активності
+
+# Запуск бота
+if __name__ == "__main__":
+    # Видаляємо webhook, якщо він був встановлений
+    try:
+        bot.remove_webhook()
+        logger.info("Webhook видалено")
+    except Exception as e:
+        logger.error(f"Помилка видалення webhook: {e}")
+
+    # Запускаємо polling в асинхронному режимі
+    asyncio.run(run_polling())
