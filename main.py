@@ -7,8 +7,6 @@ import asyncio
 import requests
 from telebot.handler_backends import BaseMiddleware
 from telebot import types
-from flask import Flask
-import threading
 
 # Налаштування логування
 logging.basicConfig(
@@ -21,8 +19,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Ініціалізація Flask для health-check
-app = Flask(__name__)
+logger.info("Початок виконання скрипта")
 
 # Налаштування Telegram бота
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -33,12 +30,12 @@ if not BOT_TOKEN:
     logger.error("BOT_TOKEN не встановлено. Перевірте змінні оточення.")
     raise ValueError("BOT_TOKEN не встановлено")
 
-bot = telebot.TeleBot(BOT_TOKEN)
-
-# Health-check ендпоінт для UptimeRobot
-@app.route('/health')
-def health():
-    return {"status": "ok"}, 200
+try:
+    bot = telebot.TeleBot(BOT_TOKEN)
+    logger.info("Бот ініціалізовано")
+except Exception as e:
+    logger.error(f"Помилка ініціалізації бота: {e}")
+    raise
 
 # Middleware для обмеження частоти запитів
 class RateLimitMiddleware(BaseMiddleware):
@@ -63,7 +60,7 @@ bot.setup_middleware(RateLimitMiddleware())
 def keep_alive():
     if KEEP_ALIVE_URL:
         try:
-            response = requests.get(KEEP_ALIVE_URL + "/health")
+            response = requests.get(KEEP_ALIVE_URL)
             logger.info(f"Keep-alive ping: {response.status_code}")
         except Exception as e:
             logger.error(f"Помилка keep-alive: {e}")
@@ -82,11 +79,16 @@ def send_main_menu(chat_id):
         InlineKeyboardButton("💼 Контакти", callback_data="contacts"),
         InlineKeyboardButton("👤 Про компанію", callback_data="about")
     )
-    bot.send_message(chat_id, welcome_text, reply_markup=markup, parse_mode="Markdown")
+    try:
+        bot.send_message(chat_id, welcome_text, reply_markup=markup, parse_mode="Markdown")
+        logger.info(f"Відправлено головне меню для chat_id: {chat_id}")
+    except Exception as e:
+        logger.error(f"Помилка відправки головного меню: {e}")
 
 # Обробник /start
 @bot.message_handler(commands=['start'])
 def handle_start(message):
+    logger.info(f"Отримано команду /start від {message.chat.id}")
     send_main_menu(message.chat.id)
 
 # Обробник callback-запитів
@@ -94,6 +96,7 @@ def handle_start(message):
 def handle_query(call):
     chat_id = call.message.chat.id
     message_id = call.message.message_id
+    logger.info(f"Отримано callback: {call.data} від {chat_id}")
 
     def tpl_back():
         return InlineKeyboardMarkup(row_width=1).add(
@@ -390,33 +393,26 @@ def handle_query(call):
 
 # Асинхронна функція для polling із повторними спробами
 async def run_polling():
+    logger.info("Запуск polling...")
     while True:
         try:
-            logger.info("Запуск polling...")
             await bot.polling(none_stop=True, interval=0, timeout=20)
         except Exception as e:
             logger.error(f"Помилка polling: {e}")
-            await asyncio.sleep(10)  # Чекаємо 10 секунд перед перезапуском
             keep_alive()  # Пінгуємо сервер для підтримки активності
+            await asyncio.sleep(10)  # Чекаємо 10 секунд перед перезапуском
 
-# Функція для запуску Flask у окремому потоці
-def run_flask():
-    port = int(os.getenv("PORT", 10000))
-    app.run(host='0.0.0.0', port=port)
-
-# Запуск бота та Flask
+# Запуск бота
 if __name__ == "__main__":
-    # Видаляємо webhook, якщо він був встановлений
+    logger.info("Скрипт запущено")
     try:
         bot.remove_webhook()
         logger.info("Webhook видалено")
     except Exception as e:
         logger.error(f"Помилка видалення webhook: {e}")
 
-    # Запускаємо Flask у окремому потоці
-    flask_thread = threading.Thread(target=run_flask)
-    flask_thread.daemon = True
-    flask_thread.start()
-
-    # Запускаємо polling в основному потоці
-    asyncio.run(run_polling())
+    try:
+        asyncio.run(run_polling())
+    except Exception as e:
+        logger.error(f"Критична помилка запуску: {e}")
+        raise
