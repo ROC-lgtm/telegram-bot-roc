@@ -7,6 +7,8 @@ import asyncio
 import requests
 from telebot.handler_backends import BaseMiddleware
 from telebot import types
+from flask import Flask
+import threading
 
 # Налаштування логування
 logging.basicConfig(
@@ -21,9 +23,12 @@ logger = logging.getLogger(__name__)
 
 logger.info("Початок виконання скрипта")
 
+# Ініціалізація Flask для health-check
+app = Flask(__name__)
+
 # Налаштування Telegram бота
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-KEEP_ALIVE_URL = os.getenv("RENDER_EXTERNAL_URL")  # Наприклад, https://your-service.onrender.com
+KEEP_ALIVE_URL = os.getenv("RENDER_EXTERNAL_URL")  # Наприклад, https://telegram-bot-roc.onrender.com
 
 # Перевірка змінних оточення
 if not BOT_TOKEN:
@@ -31,11 +36,16 @@ if not BOT_TOKEN:
     raise ValueError("BOT_TOKEN не встановлено")
 
 try:
-    bot = telebot.TeleBot(BOT_TOKEN)
+    bot = telebot.TeleBot(BOT_TOKEN, use_class_middlewares=True)
     logger.info("Бот ініціалізовано")
 except Exception as e:
     logger.error(f"Помилка ініціалізації бота: {e}")
     raise
+
+# Health-check ендпоінт для UptimeRobot
+@app.route('/health')
+def health():
+    return {"status": "ok"}, 200
 
 # Middleware для обмеження частоти запитів
 class RateLimitMiddleware(BaseMiddleware):
@@ -60,7 +70,7 @@ bot.setup_middleware(RateLimitMiddleware())
 def keep_alive():
     if KEEP_ALIVE_URL:
         try:
-            response = requests.get(KEEP_ALIVE_URL)
+            response = requests.get(KEEP_ALIVE_URL + "/health")
             logger.info(f"Keep-alive ping: {response.status_code}")
         except Exception as e:
             logger.error(f"Помилка keep-alive: {e}")
@@ -402,7 +412,12 @@ async def run_polling():
             keep_alive()  # Пінгуємо сервер для підтримки активності
             await asyncio.sleep(10)  # Чекаємо 10 секунд перед перезапуском
 
-# Запуск бота
+# Функція для запуску Flask у окремому потоці
+def run_flask():
+    port = int(os.getenv("PORT", 10000))
+    app.run(host='0.0.0.0', port=port)
+
+# Запуск бота та Flask
 if __name__ == "__main__":
     logger.info("Скрипт запущено")
     try:
@@ -411,6 +426,12 @@ if __name__ == "__main__":
     except Exception as e:
         logger.error(f"Помилка видалення webhook: {e}")
 
+    # Запускаємо Flask у окремому потоці
+    flask_thread = threading.Thread(target=run_flask)
+    flask_thread.daemon = True
+    flask_thread.start()
+
+    # Запускаємо polling в основному потоці
     try:
         asyncio.run(run_polling())
     except Exception as e:
